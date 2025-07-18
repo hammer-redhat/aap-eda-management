@@ -1,0 +1,174 @@
+---
+- name: Deploy AAP Controller on OpenShift
+  hosts: localhost
+  gather_facts: false
+  vars:
+    k8s_auth_kubeconfig: "{{ hostvars[groups['openshift_clusters'][0]]['k8s_auth_kubeconfig'] }}"
+    
+  tasks:
+    - name: Create AutomationController Custom Resource
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: automationcontroller.ansible.com/v1beta1
+          kind: AutomationController
+          metadata:
+            name: controller
+            namespace: "{{ aap_namespace }}"
+          spec:
+            # Deployment configuration
+            replicas: "{{ controller_replicas }}"
+            
+            # Image configuration
+            image: "{{ container_registry }}/ubi8/ubi:latest"
+            image_pull_policy: "{{ container_pull_policy }}"
+            image_pull_secrets:
+              - name: redhat-registry-secret
+            
+            # Resource requirements
+            web_resource_requirements:
+              requests:
+                cpu: "{{ controller_cpu_request }}"
+                memory: "{{ controller_memory_request }}"
+              limits:
+                cpu: "{{ controller_cpu_limit }}"
+                memory: "{{ controller_memory_limit }}"
+            
+            task_resource_requirements:
+              requests:
+                cpu: "{{ controller_cpu_request }}"
+                memory: "{{ controller_memory_request }}"
+              limits:
+                cpu: "{{ controller_cpu_limit }}"
+                memory: "{{ controller_memory_limit }}"
+            
+            # Storage configuration
+            projects_persistence: true
+            projects_storage_class: "{{ storage_class }}"
+            projects_storage_size: "{{ controller_storage_size }}"
+            projects_storage_access_mode: "{{ pv_access_mode }}"
+            
+            # Network configuration
+            hostname: "{{ controller_hostname }}"
+            ingress_type: route
+            route_tls_termination_mechanism: "{{ route_termination }}"
+            
+            # Database configuration
+            postgres_configuration_secret: controller-postgres-configuration
+            postgres_storage_class: "{{ storage_class }}"
+            postgres_storage_size: "{{ postgres_storage_size }}"
+            
+            # License configuration
+            license_secret: aap-license
+            
+            # Admin user configuration
+            admin_user: "{{ aap_admin_user }}"
+            admin_password_secret: aap-admin-password
+            
+            # Security configuration
+            service_account_annotations:
+              serviceaccounts.openshift.io/oauth-redirectreference.controller: '{"kind":"OAuthRedirectReference","apiVersion":"v1","reference":{"kind":"Route","name":"controller"}}'
+            
+            # Additional configuration
+            extra_settings:
+              - setting: ALLOW_METRICS_COLLECTION
+                value: "{{ metrics_enabled | string }}"
+              - setting: LOG_LEVEL
+                value: "{{ log_level }}"
+              - setting: SESSION_COOKIE_AGE
+                value: "3600"
+            
+            # Node affinity (if enabled)
+            node_selector: "{{ node_selector | default({}) }}"
+            
+            # Tolerations (if enabled)
+            tolerations: "{{ tolerations | default([]) }}"
+            
+        kubeconfig: "{{ k8s_auth_kubeconfig }}"
+    
+    - name: Create PostgreSQL configuration secret for Controller
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: controller-postgres-configuration
+            namespace: "{{ aap_namespace }}"
+          type: Opaque
+          data:
+            host: "{{ ('controller-postgres-13.' + aap_namespace + '.svc.cluster.local') | b64encode }}"
+            port: "{{ '5432' | b64encode }}"
+            database: "{{ 'awx' | b64encode }}"
+            username: "{{ 'awx' | b64encode }}"
+            password: "{{ vault_postgres_user_password | b64encode }}"
+            sslmode: "{{ 'prefer' | b64encode }}"
+            type: "{{ 'managed' | b64encode }}"
+        kubeconfig: "{{ k8s_auth_kubeconfig }}"
+    
+    - name: Wait for Controller deployment to be ready
+      kubernetes.core.k8s_info:
+        api_version: automationcontroller.ansible.com/v1beta1
+        kind: AutomationController
+        name: controller
+        namespace: "{{ aap_namespace }}"
+        kubeconfig: "{{ k8s_auth_kubeconfig }}"
+      register: controller_status
+      until: 
+        - controller_status.resources | length > 0
+        - controller_status.resources[0].status.conditions is defined
+        - controller_status.resources[0].status.conditions | selectattr('type', 'equalto', 'Running') | selectattr('status', 'equalto', 'True') | list | length > 0
+      retries: 60
+      delay: 30
+    
+    - name: Get Controller route
+      kubernetes.core.k8s_info:
+        api_version: route.openshift.io/v1
+        kind: Route
+        name: controller
+        namespace: "{{ aap_namespace }}"
+        kubeconfig: "{{ k8s_auth_kubeconfig }}"
+      register: controller_route
+    
+    - name: Display Controller access information
+      debug:
+        msg: |
+          Controller deployed successfully!
+          URL: https://{{ controller_route.resources[0].spec.host }}
+          Username: {{ aap_admin_user }}
+          Password: Check the 'aap-admin-password' secret
+    
+    - name: Create NetworkPolicy for Controller (if enabled)
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: controller-network-policy
+            namespace: "{{ aap_namespace }}"
+          spec:
+            podSelector:
+              matchLabels:
+                app.kubernetes.io/name: controller
+            policyTypes:
+              - Ingress
+              - Egress
+            ingress:
+              - from:
+                  - namespaceSelector:
+                      matchLabels:
+                        name: openshift-ingress
+                ports:
+                  - protocol: TCP
+                    port: 8080
+            egress:
+              - to: []
+                ports:
+                  - protocol: TCP
+                    port: 5432  # PostgreSQL
+                  - protocol: TCP
+                    port: 6379  # Redis
+                  - protocol: TCP
+                    port: 443   # HTTPS
+                  - protocol: TCP
+                    port: 80    # HTTP
+        kubeconfig: "{{ k8s_auth_kubeconfig }}"
+      when: network_policy_enabled | bool 

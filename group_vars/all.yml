@@ -1,0 +1,95 @@
+---
+# Global configuration for AAP 2.5 Operator deployment on OpenShift
+
+# OpenShift Configuration
+openshift_cli_version: "4.14"
+openshift_operators_namespace: "openshift-operators"
+openshift_marketplace_namespace: "openshift-marketplace"
+
+# AAP Operator Configuration
+aap_operator_name: "ansible-automation-platform-operator"
+aap_operator_channel: "stable-2.5-cluster-scoped"
+aap_operator_source: "redhat-operators"
+aap_operator_install_mode: "AllNamespaces"
+
+# AAP Common Configuration
+aap_admin_user: "admin"
+aap_organization: "Default"
+aap_license_file: "{{ vault_aap_license_file }}"
+
+# Database configuration (PostgreSQL operator managed)
+postgres_operator_version: "v5"
+postgres_storage_class: "{{ storage_class }}"
+postgres_backup_enabled: true
+
+# Redis configuration (managed by operator)
+redis_storage_class: "{{ storage_class }}"
+redis_memory_limit: "1Gi"
+
+# SSL/TLS Configuration
+ssl_enabled: true
+cert_manager_enabled: true
+cert_manager_version: "v1.13.0"
+
+# Backup configuration
+backup_enabled: true
+backup_storage_class: "{{ storage_class }}"
+backup_retention_policy: "30d"
+backup_schedule: "0 2 * * *"
+
+# Monitoring configuration
+monitoring_enabled: true
+log_level: "INFO"
+metrics_enabled: true
+prometheus_enabled: true
+
+# Network configuration
+ingress_class: "openshift-default"
+route_termination: "edge"
+
+# Container configuration
+container_registry: "registry.redhat.io"
+container_pull_policy: "Always"
+image_pull_secrets:
+  - "redhat-registry-secret"
+
+# Security settings
+security_context_enabled: true
+pod_security_policy_enabled: true
+network_policy_enabled: true
+rbac_enabled: true
+
+# Resource quotas and limits
+resource_quota_enabled: true
+limit_range_enabled: true
+
+# Autoscaling configuration
+hpa_enabled: true
+hpa_min_replicas: 1
+hpa_max_replicas: 10
+hpa_target_cpu: 70
+hpa_target_memory: 80
+
+# Node affinity and tolerations
+node_affinity_enabled: true
+node_selector_enabled: false
+tolerations_enabled: false
+
+# Persistent Volume configuration
+pv_access_mode: "ReadWriteOnce"
+pv_reclaim_policy: "Retain"
+
+# Operator Lifecycle Manager (OLM) configuration
+olm_enabled: true
+olm_namespace: "olm"
+
+# Event Driven Ansible specific configuration
+eda_event_streams:
+  - kafka
+  - webhook
+  - alertmanager
+
+# Custom Resource Definitions
+controller_crd_name: "automationcontrollers.automationcontroller.ansible.com"
+hub_crd_name: "automationhubs.automationhub.ansible.com"
+eda_crd_name: "edacontrollers.eda.ansible.com" 

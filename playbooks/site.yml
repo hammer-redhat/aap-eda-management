@@ -1,0 +1,48 @@
+---
+- name: Deploy and manage Ansible Automation Platform 2.5 on OpenShift with Event Driven Ansible
+  hosts: localhost
+  gather_facts: false
+  vars:
+    deployment_phase: "{{ phase | default('all') }}"
+  
+  tasks:
+    - name: Display deployment information
+      debug:
+        msg: |
+          Starting AAP 2.5 Operator deployment on OpenShift with EDA
+          Phase: {{ deployment_phase }}
+          Target environment: {{ ansible_inventory_sources[0] | dirname | basename }}
+          OpenShift cluster: {{ hostvars[groups['openshift_clusters'][0]]['openshift_cluster_name'] }}
+          AAP namespace: {{ aap_namespace }}
+      
+    - name: Validate deployment prerequisites
+      include_tasks: tasks/validate_prerequisites.yml
+      when: deployment_phase in ['all', 'validate']
+
+- name: Install AAP Operator
+  import_playbook: openshift-operator-install.yml
+  when: deployment_phase in ['all', 'operator']
+
+- name: Deploy AAP Controller
+  import_playbook: controller.yml
+  when: deployment_phase in ['all', 'controller']
+
+- name: Deploy AAP Hub
+  import_playbook: hub.yml
+  when: deployment_phase in ['all', 'hub']
+
+- name: Deploy Event Driven Ansible
+  import_playbook: eda.yml
+  when: deployment_phase in ['all', 'eda']
+
+- name: Configure monitoring and logging
+  import_playbook: monitoring.yml
+  when: deployment_phase in ['all', 'monitoring']
+
+- name: Setup backup and maintenance
+  import_playbook: maintenance.yml
+  when: deployment_phase in ['all', 'maintenance']
+
+- name: Final validation and smoke tests
+  import_playbook: validation.yml
+  when: deployment_phase in ['all', 'validate'] 

@@ -1,0 +1,207 @@
+---
+- name: Deploy AAP Hub on OpenShift
+  hosts: localhost
+  gather_facts: false
+  vars:
+    k8s_auth_kubeconfig: "{{ hostvars[groups['openshift_clusters'][0]]['k8s_auth_kubeconfig'] }}"
+    
+  tasks:
+    - name: Create AutomationHub Custom Resource
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: automationhub.ansible.com/v1beta1
+          kind: AutomationHub
+          metadata:
+            name: hub
+            namespace: "{{ aap_namespace }}"
+          spec:
+            # Deployment configuration
+            replicas: "{{ hub_replicas }}"
+            
+            # Image configuration
+            image: "{{ container_registry }}/ubi8/ubi:latest"
+            image_pull_policy: "{{ container_pull_policy }}"
+            image_pull_secrets:
+              - name: redhat-registry-secret
+            
+            # Resource requirements
+            web_resource_requirements:
+              requests:
+                cpu: "{{ hub_cpu_request }}"
+                memory: "{{ hub_memory_request }}"
+              limits:
+                cpu: "{{ hub_cpu_limit }}"
+                memory: "{{ hub_memory_limit }}"
+            
+            api_resource_requirements:
+              requests:
+                cpu: "{{ hub_cpu_request }}"
+                memory: "{{ hub_memory_request }}"
+              limits:
+                cpu: "{{ hub_cpu_limit }}"
+                memory: "{{ hub_memory_limit }}"
+            
+            # Storage configuration
+            storage_type: file
+            file_storage_size: "{{ hub_storage_size }}"
+            file_storage_storage_class: "{{ storage_class }}"
+            file_storage_access_mode: "{{ pv_access_mode }}"
+            
+            # Network configuration
+            hostname: "{{ hub_hostname }}"
+            ingress_type: route
+            route_tls_termination_mechanism: "{{ route_termination }}"
+            
+            # Database configuration
+            postgres_configuration_secret: hub-postgres-configuration
+            postgres_storage_class: "{{ storage_class }}"
+            postgres_storage_size: "{{ postgres_storage_size }}"
+            
+            # Redis configuration
+            redis_configuration_secret: hub-redis-configuration
+            
+            # Admin user configuration
+            admin_user: "{{ aap_admin_user }}"
+            admin_password_secret: aap-admin-password
+            
+            # Security configuration
+            service_account_annotations:
+              serviceaccounts.openshift.io/oauth-redirectreference.hub: '{"kind":"OAuthRedirectReference","apiVersion":"v1","reference":{"kind":"Route","name":"hub"}}'
+            
+            # Additional configuration
+            extra_settings:
+              - setting: ALLOW_METRICS_COLLECTION
+                value: "{{ metrics_enabled | string }}"
+              - setting: LOG_LEVEL
+                value: "{{ log_level }}"
+              - setting: GALAXY_COLLECTION_SIGNING_SERVICE
+                value: "ansible-default"
+              - setting: GALAXY_CONTAINER_SIGNING_SERVICE
+                value: "container-default"
+            
+            # Pulp configuration
+            pulp_settings:
+              - setting: CONTENT_ORIGIN
+                value: "https://{{ hub_hostname }}"
+              - setting: ANSIBLE_API_HOSTNAME
+                value: "https://{{ hub_hostname }}"
+              - setting: ANSIBLE_CONTENT_HOSTNAME
+                value: "https://{{ hub_hostname }}/pulp/content"
+            
+            # Node affinity (if enabled)
+            node_selector: "{{ node_selector | default({}) }}"
+            
+            # Tolerations (if enabled)
+            tolerations: "{{ tolerations | default([]) }}"
+            
+        kubeconfig: "{{ k8s_auth_kubeconfig }}"
+    
+    - name: Create PostgreSQL configuration secret for Hub
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: hub-postgres-configuration
+            namespace: "{{ aap_namespace }}"
+          type: Opaque
+          data:
+            host: "{{ ('hub-postgres-13.' + aap_namespace + '.svc.cluster.local') | b64encode }}"
+            port: "{{ '5432' | b64encode }}"
+            database: "{{ 'pulp' | b64encode }}"
+            username: "{{ 'pulp' | b64encode }}"
+            password: "{{ vault_postgres_user_password | b64encode }}"
+            sslmode: "{{ 'prefer' | b64encode }}"
+            type: "{{ 'managed' | b64encode }}"
+        kubeconfig: "{{ k8s_auth_kubeconfig }}"
+    
+    - name: Create Redis configuration secret for Hub
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: hub-redis-configuration
+            namespace: "{{ aap_namespace }}"
+          type: Opaque
+          data:
+            host: "{{ ('hub-redis.' + aap_namespace + '.svc.cluster.local') | b64encode }}"
+            port: "{{ '6379' | b64encode }}"
+            password: "{{ vault_redis_password | b64encode }}"
+        kubeconfig: "{{ k8s_auth_kubeconfig }}"
+    
+    - name: Wait for Hub deployment to be ready
+      kubernetes.core.k8s_info:
+        api_version: automationhub.ansible.com/v1beta1
+        kind: AutomationHub
+        name: hub
+        namespace: "{{ aap_namespace }}"
+        kubeconfig: "{{ k8s_auth_kubeconfig }}"
+      register: hub_status
+      until: 
+        - hub_status.resources | length > 0
+        - hub_status.resources[0].status.conditions is defined
+        - hub_status.resources[0].status.conditions | selectattr('type', 'equalto', 'Running') | selectattr('status', 'equalto', 'True') | list | length > 0
+      retries: 60
+      delay: 30
+    
+    - name: Get Hub route
+      kubernetes.core.k8s_info:
+        api_version: route.openshift.io/v1
+        kind: Route
+        name: hub
+        namespace: "{{ aap_namespace }}"
+        kubeconfig: "{{ k8s_auth_kubeconfig }}"
+      register: hub_route
+    
+    - name: Display Hub access information
+      debug:
+        msg: |
+          Hub deployed successfully!
+          URL: https://{{ hub_route.resources[0].spec.host }}
+          Username: {{ aap_admin_user }}
+          Password: Check the 'aap-admin-password' secret
+    
+    - name: Create NetworkPolicy for Hub (if enabled)
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: hub-network-policy
+            namespace: "{{ aap_namespace }}"
+          spec:
+            podSelector:
+              matchLabels:
+                app.kubernetes.io/name: hub
+            policyTypes:
+              - Ingress
+              - Egress
+            ingress:
+              - from:
+                  - namespaceSelector:
+                      matchLabels:
+                        name: openshift-ingress
+                ports:
+                  - protocol: TCP
+                    port: 8080
+              - from:
+                  - podSelector:
+                      matchLabels:
+                        app.kubernetes.io/name: controller
+                ports:
+                  - protocol: TCP
+                    port: 8080
+            egress:
+              - to: []
+                ports:
+                  - protocol: TCP
+                    port: 5432  # PostgreSQL
+                  - protocol: TCP
+                    port: 6379  # Redis
+                  - protocol: TCP
+                    port: 443   # HTTPS
+                  - protocol: TCP
+                    port: 80    # HTTP
+        kubeconfig: "{{ k8s_auth_kubeconfig }}"
+      when: network_policy_enabled | bool 

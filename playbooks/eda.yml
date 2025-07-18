@@ -1,0 +1,209 @@
+---
+- name: Deploy Event Driven Ansible Controller on OpenShift
+  hosts: localhost
+  gather_facts: false
+  vars:
+    k8s_auth_kubeconfig: "{{ hostvars[groups['openshift_clusters'][0]]['k8s_auth_kubeconfig'] }}"
+    
+  tasks:
+    - name: Create EDAController Custom Resource
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: eda.ansible.com/v1alpha1
+          kind: EDAController
+          metadata:
+            name: eda-controller
+            namespace: "{{ aap_namespace }}"
+          spec:
+            # Deployment configuration
+            replicas: "{{ eda_replicas }}"
+            
+            # Image configuration
+            image: "{{ container_registry }}/ubi8/ubi:latest"
+            image_pull_policy: "{{ container_pull_policy }}"
+            image_pull_secrets:
+              - name: redhat-registry-secret
+            
+            # Resource requirements
+            web_resource_requirements:
+              requests:
+                cpu: "{{ eda_cpu_request }}"
+                memory: "{{ eda_memory_request }}"
+              limits:
+                cpu: "{{ eda_cpu_limit }}"
+                memory: "{{ eda_memory_limit }}"
+            
+            worker_resource_requirements:
+              requests:
+                cpu: "{{ eda_cpu_request }}"
+                memory: "{{ eda_memory_request }}"
+              limits:
+                cpu: "{{ eda_cpu_limit }}"
+                memory: "{{ eda_memory_limit }}"
+            
+            # Storage configuration
+            projects_persistence: true
+            projects_storage_class: "{{ storage_class }}"
+            projects_storage_size: "{{ eda_storage_size }}"
+            projects_storage_access_mode: "{{ pv_access_mode }}"
+            
+            # Network configuration
+            hostname: "{{ eda_hostname }}"
+            ingress_type: route
+            route_tls_termination_mechanism: "{{ route_termination }}"
+            
+            # Database configuration
+            postgres_configuration_secret: eda-postgres-configuration
+            postgres_storage_class: "{{ storage_class }}"
+            postgres_storage_size: "{{ postgres_storage_size }}"
+            
+            # Redis configuration
+            redis_configuration_secret: eda-redis-configuration
+            
+            # Admin user configuration
+            admin_user: "{{ aap_admin_user }}"
+            admin_password_secret: aap-admin-password
+            
+            # Security configuration
+            service_account_annotations:
+              serviceaccounts.openshift.io/oauth-redirectreference.eda: '{"kind":"OAuthRedirectReference","apiVersion":"v1","reference":{"kind":"Route","name":"eda-controller"}}'
+            
+            # Additional configuration
+            extra_settings:
+              - setting: ALLOW_METRICS_COLLECTION
+                value: "{{ metrics_enabled | string }}"
+              - setting: LOG_LEVEL
+                value: "{{ log_level }}"
+              - setting: EDA_EVENT_STREAM_WORKERS
+                value: "4"
+              - setting: EDA_ACTIVATION_WORKERS
+                value: "2"
+            
+            # Event stream configuration
+            event_stream_settings:
+              - setting: KAFKA_BOOTSTRAP_SERVERS
+                value: "kafka-cluster-kafka-bootstrap:9092"
+              - setting: WEBHOOK_ENABLED
+                value: "true"
+              - setting: ALERTMANAGER_ENABLED
+                value: "true"
+            
+            # Node affinity (if enabled)
+            node_selector: "{{ node_selector | default({}) }}"
+            
+            # Tolerations (if enabled)
+            tolerations: "{{ tolerations | default([]) }}"
+            
+        kubeconfig: "{{ k8s_auth_kubeconfig }}"
+    
+    - name: Create PostgreSQL configuration secret for EDA
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: eda-postgres-configuration
+            namespace: "{{ aap_namespace }}"
+          type: Opaque
+          data:
+            host: "{{ ('eda-postgres-13.' + aap_namespace + '.svc.cluster.local') | b64encode }}"
+            port: "{{ '5432' | b64encode }}"
+            database: "{{ 'eda' | b64encode }}"
+            username: "{{ 'eda' | b64encode }}"
+            password: "{{ vault_postgres_user_password | b64encode }}"
+            sslmode: "{{ 'prefer' | b64encode }}"
+            type: "{{ 'managed' | b64encode }}"
+        kubeconfig: "{{ k8s_auth_kubeconfig }}"
+    
+    - name: Create Redis configuration secret for EDA
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: eda-redis-configuration
+            namespace: "{{ aap_namespace }}"
+          type: Opaque
+          data:
+            host: "{{ ('eda-redis.' + aap_namespace + '.svc.cluster.local') | b64encode }}"
+            port: "{{ '6379' | b64encode }}"
+            password: "{{ vault_redis_password | b64encode }}"
+        kubeconfig: "{{ k8s_auth_kubeconfig }}"
+    
+    - name: Wait for EDA Controller deployment to be ready
+      kubernetes.core.k8s_info:
+        api_version: eda.ansible.com/v1alpha1
+        kind: EDAController
+        name: eda-controller
+        namespace: "{{ aap_namespace }}"
+        kubeconfig: "{{ k8s_auth_kubeconfig }}"
+      register: eda_status
+      until: 
+        - eda_status.resources | length > 0
+        - eda_status.resources[0].status.conditions is defined
+        - eda_status.resources[0].status.conditions | selectattr('type', 'equalto', 'Running') | selectattr('status', 'equalto', 'True') | list | length > 0
+      retries: 60
+      delay: 30
+    
+    - name: Get EDA Controller route
+      kubernetes.core.k8s_info:
+        api_version: route.openshift.io/v1
+        kind: Route
+        name: eda-controller
+        namespace: "{{ aap_namespace }}"
+        kubeconfig: "{{ k8s_auth_kubeconfig }}"
+      register: eda_route
+    
+    - name: Display EDA Controller access information
+      debug:
+        msg: |
+          EDA Controller deployed successfully!
+          URL: https://{{ eda_route.resources[0].spec.host }}
+          Username: {{ aap_admin_user }}
+          Password: Check the 'aap-admin-password' secret
+    
+    - name: Create NetworkPolicy for EDA Controller (if enabled)
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: eda-network-policy
+            namespace: "{{ aap_namespace }}"
+          spec:
+            podSelector:
+              matchLabels:
+                app.kubernetes.io/name: eda-controller
+            policyTypes:
+              - Ingress
+              - Egress
+            ingress:
+              - from:
+                  - namespaceSelector:
+                      matchLabels:
+                        name: openshift-ingress
+                ports:
+                  - protocol: TCP
+                    port: 8080
+              - from:
+                  - podSelector:
+                      matchLabels:
+                        app.kubernetes.io/name: controller
+                ports:
+                  - protocol: TCP
+                    port: 8080
+            egress:
+              - to: []
+                ports:
+                  - protocol: TCP
+                    port: 5432  # PostgreSQL
+                  - protocol: TCP
+                    port: 6379  # Redis
+                  - protocol: TCP
+                    port: 9092  # Kafka
+                  - protocol: TCP
+                    port: 443   # HTTPS
+                  - protocol: TCP
+                    port: 80    # HTTP
+        kubeconfig: "{{ k8s_auth_kubeconfig }}"
+      when: network_policy_enabled | bool 

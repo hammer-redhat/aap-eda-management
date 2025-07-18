@@ -1,0 +1,79 @@
+---
+# Vault file for sensitive variables
+# Encrypt this file with: ansible-vault encrypt group_vars/vault.yml
+
+# OpenShift Authentication
+vault_openshift_token: "changeme_openshift_token"
+vault_openshift_username: "changeme_openshift_username"
+vault_openshift_password: "changeme_openshift_password"
+
+# Red Hat Registry Pull Secret (base64 encoded)
+vault_redhat_registry_secret: |
+  {
+    "auths": {
+      "registry.redhat.io": {
+        "auth": "changeme_base64_encoded_username_password",
+        "email": "changeme@example.com"
+      }
+    }
+  }
+
+# AAP License (base64 encoded)
+vault_aap_license_file: |
+  # Replace with your AAP license file content (base64 encoded)
+  changeme_aap_license_content
+
+# AAP Admin passwords
+vault_aap_admin_password: "changeme_aap_admin_password"
+vault_aap_admin_password_dev: "changeme_aap_admin_dev_password"
+
+# Database passwords (managed by operators)
+vault_postgres_admin_password: "changeme_postgres_admin_password"
+vault_postgres_user_password: "changeme_postgres_user_password"
+
+# Redis password (managed by operator)
+vault_redis_password: "changeme_redis_password"
+
+# SSL certificates (for custom certificates)
+vault_ssl_certificate: |
+  -----BEGIN CERTIFICATE-----
+  # Replace with your SSL certificate if not using cert-manager
+  -----END CERTIFICATE-----
+
+vault_ssl_private_key: |
+  -----BEGIN PRIVATE KEY-----
+  # Replace with your SSL private key if not using cert-manager
+  -----END PRIVATE KEY-----
+
+# API tokens and secrets
+vault_automation_hub_token: "changeme_hub_token"
+vault_galaxy_token: "changeme_galaxy_token"
+vault_webhook_secret: "changeme_webhook_secret"
+
+# LDAP/AD credentials (if using external authentication)
+vault_ldap_bind_password: "changeme_ldap_password"
+vault_ldap_ca_certificate: |
+  -----BEGIN CERTIFICATE-----
+  # Replace with your LDAP CA certificate
+  -----END CERTIFICATE-----
+
+# Backup encryption key
+vault_backup_encryption_key: "changeme_backup_encryption_key"
+
+# S3 credentials for backup storage (if using external storage)
+vault_s3_access_key: "changeme_s3_access_key"
+vault_s3_secret_key: "changeme_s3_secret_key"
+vault_s3_bucket: "changeme_s3_bucket_name"
+
+# OAuth/OIDC credentials (if using external authentication)
+vault_oauth_client_id: "changeme_oauth_client_id"
+vault_oauth_client_secret: "changeme_oauth_client_secret"
+
+# Notification credentials
+vault_smtp_password: "changeme_smtp_password"
+vault_slack_webhook_url: "changeme_slack_webhook_url"
+vault_pagerduty_api_key: "changeme_pagerduty_api_key"
+
+# Monitoring credentials
+vault_grafana_admin_password: "changeme_grafana_admin_password"
+vault_prometheus_auth_token: "changeme_prometheus_auth_token" 

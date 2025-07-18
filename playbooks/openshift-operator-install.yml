@@ -1,0 +1,110 @@
+---
+- name: Install Ansible Automation Platform 2.5 Operator on OpenShift
+  hosts: localhost
+  gather_facts: false
+  vars:
+    k8s_auth_kubeconfig: "{{ hostvars[groups['openshift_clusters'][0]]['k8s_auth_kubeconfig'] }}"
+    
+  tasks:
+    - name: Ensure required Python packages are installed
+      pip:
+        name:
+          - kubernetes
+          - openshift
+          - pyyaml
+        state: present
+    
+    - name: Create AAP namespace
+      kubernetes.core.k8s:
+        name: "{{ aap_namespace }}"
+        api_version: v1
+        kind: Namespace
+        state: present
+        kubeconfig: "{{ k8s_auth_kubeconfig }}"
+    
+    - name: Create Red Hat registry pull secret
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: redhat-registry-secret
+            namespace: "{{ aap_namespace }}"
+          type: kubernetes.io/dockerconfigjson
+          data:
+            .dockerconfigjson: "{{ vault_redhat_registry_secret | b64encode }}"
+        kubeconfig: "{{ k8s_auth_kubeconfig }}"
+    
+    - name: Create OperatorGroup for AAP
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: operators.coreos.com/v1
+          kind: OperatorGroup
+          metadata:
+            name: ansible-automation-platform-operator-group
+            namespace: "{{ aap_namespace }}"
+          spec:
+            targetNamespaces:
+              - "{{ aap_namespace }}"
+        kubeconfig: "{{ k8s_auth_kubeconfig }}"
+    
+    - name: Create Subscription for AAP Operator
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: operators.coreos.com/v1alpha1
+          kind: Subscription
+          metadata:
+            name: "{{ aap_operator_name }}"
+            namespace: "{{ aap_namespace }}"
+          spec:
+            channel: "{{ aap_operator_channel }}"
+            name: "{{ aap_operator_name }}"
+            source: "{{ aap_operator_source }}"
+            sourceNamespace: "{{ openshift_marketplace_namespace }}"
+            installPlanApproval: Automatic
+        kubeconfig: "{{ k8s_auth_kubeconfig }}"
+    
+    - name: Wait for AAP Operator to be ready
+      kubernetes.core.k8s_info:
+        api_version: operators.coreos.com/v1alpha1
+        kind: ClusterServiceVersion
+        namespace: "{{ aap_namespace }}"
+        label_selectors:
+          - "operators.coreos.com/ansible-automation-platform-operator.{{ aap_namespace }}"
+        kubeconfig: "{{ k8s_auth_kubeconfig }}"
+      register: csv_result
+      until: 
+        - csv_result.resources | length > 0
+        - csv_result.resources[0].status.phase == "Succeeded"
+      retries: 30
+      delay: 30
+    
+    - name: Display operator installation status
+      debug:
+        msg: "AAP Operator installed successfully: {{ csv_result.resources[0].metadata.name }}"
+    
+    - name: Create AAP license secret
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: aap-license
+            namespace: "{{ aap_namespace }}"
+          type: Opaque
+          data:
+            license: "{{ vault_aap_license_file | b64encode }}"
+        kubeconfig: "{{ k8s_auth_kubeconfig }}"
+    
+    - name: Create AAP admin password secret
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: aap-admin-password
+            namespace: "{{ aap_namespace }}"
+          type: Opaque
+          data:
+            password: "{{ vault_aap_admin_password | b64encode }}"
+        kubeconfig: "{{ k8s_auth_kubeconfig }}" 

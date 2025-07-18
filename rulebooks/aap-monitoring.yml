@@ -1,0 +1,148 @@
+---
+- name: AAP Infrastructure Monitoring and Alerting
+  hosts: all
+  sources:
+    - name: prometheus_alerts
+      ansible.eda.alertmanager:
+        host: alertmanager.openshift-monitoring.svc.cluster.local
+        port: 9093
+        token: "{{ vault_prometheus_auth_token }}"
+        
+    - name: webhook_events
+      ansible.eda.webhook:
+        host: 0.0.0.0
+        port: 5000
+        token: "{{ vault_webhook_secret }}"
+        
+    - name: openshift_events
+      ansible.eda.kubernetes:
+        api_version: v1
+        kind: Event
+        namespace: "{{ aap_namespace }}"
+        
+  rules:
+    - name: AAP Controller Pod Restart
+      condition: event.alert.labels.alertname == "PodCrashLooping" and event.alert.labels.namespace == "{{ aap_namespace }}" and "controller" in event.alert.labels.pod
+      action:
+        run_job_template:
+          name: "AAP Controller Recovery"
+          organization: "{{ aap_organization }}"
+          job_type: run
+          inventory: "OpenShift Cluster"
+          extra_vars:
+            affected_pod: "{{ event.alert.labels.pod }}"
+            namespace: "{{ event.alert.labels.namespace }}"
+            restart_reason: "{{ event.alert.annotations.description }}"
+            
+    - name: AAP Hub Storage Alert
+      condition: event.alert.labels.alertname == "PersistentVolumeUsageHigh" and event.alert.labels.namespace == "{{ aap_namespace }}" and "hub" in event.alert.labels.persistentvolumeclaim
+      action:
+        run_job_template:
+          name: "AAP Hub Storage Cleanup"
+          organization: "{{ aap_organization }}"
+          job_type: run
+          inventory: "OpenShift Cluster"
+          extra_vars:
+            pvc_name: "{{ event.alert.labels.persistentvolumeclaim }}"
+            usage_percentage: "{{ event.alert.labels.value }}"
+            namespace: "{{ event.alert.labels.namespace }}"
+            
+    - name: EDA Controller High CPU
+      condition: event.alert.labels.alertname == "PodHighCPU" and event.alert.labels.namespace == "{{ aap_namespace }}" and "eda" in event.alert.labels.pod
+      action:
+        run_job_template:
+          name: "EDA Controller Scale Up"
+          organization: "{{ aap_organization }}"
+          job_type: run
+          inventory: "OpenShift Cluster"
+          extra_vars:
+            current_replicas: "{{ eda_replicas }}"
+            target_replicas: "{{ eda_replicas | int + 1 }}"
+            cpu_usage: "{{ event.alert.labels.value }}"
+            
+    - name: Database Connection Issues
+      condition: event.alert.labels.alertname == "PostgreSQLDown" and event.alert.labels.namespace == "{{ aap_namespace }}"
+      action:
+        run_job_template:
+          name: "Database Recovery"
+          organization: "{{ aap_organization }}"
+          job_type: run
+          inventory: "OpenShift Cluster"
+          extra_vars:
+            database_service: "{{ event.alert.labels.service }}"
+            namespace: "{{ event.alert.labels.namespace }}"
+            
+    - name: AAP License Expiration Warning
+      condition: event.alert.labels.alertname == "AAP_License_Expiring" 
+      action:
+        run_job_template:
+          name: "AAP License Renewal Notification"
+          organization: "{{ aap_organization }}"
+          job_type: run
+          inventory: "localhost"
+          extra_vars:
+            expiration_date: "{{ event.alert.annotations.expiration_date }}"
+            days_remaining: "{{ event.alert.labels.days_remaining }}"
+            
+    - name: Failed Job Template Execution
+      condition: event.type == "webhook" and event.payload.status == "failed" and event.payload.job_type == "job"
+      action:
+        run_job_template:
+          name: "Job Failure Analysis"
+          organization: "{{ aap_organization }}"
+          job_type: run
+          inventory: "OpenShift Cluster"
+          extra_vars:
+            failed_job_id: "{{ event.payload.id }}"
+            job_name: "{{ event.payload.name }}"
+            failure_reason: "{{ event.payload.result_stdout }}"
+            
+    - name: OpenShift Node Not Ready
+      condition: event.kind == "Event" and event.reason == "NodeNotReady" and event.involvedObject.kind == "Node"
+      action:
+        run_job_template:
+          name: "Node Health Check"
+          organization: "{{ aap_organization }}"
+          job_type: run
+          inventory: "OpenShift Cluster"
+          extra_vars:
+            node_name: "{{ event.involvedObject.name }}"
+            event_message: "{{ event.message }}"
+            
+    - name: AAP Backup Failure
+      condition: event.alert.labels.alertname == "AAP_Backup_Failed" and event.alert.labels.namespace == "{{ aap_namespace }}"
+      action:
+        run_job_template:
+          name: "AAP Backup Recovery"
+          organization: "{{ aap_organization }}"
+          job_type: run
+          inventory: "OpenShift Cluster"
+          extra_vars:
+            backup_job: "{{ event.alert.labels.job }}"
+            failure_reason: "{{ event.alert.annotations.description }}"
+            
+    - name: High Memory Usage Alert
+      condition: event.alert.labels.alertname == "PodHighMemory" and event.alert.labels.namespace == "{{ aap_namespace }}"
+      action:
+        run_job_template:
+          name: "Memory Usage Analysis"
+          organization: "{{ aap_organization }}"
+          job_type: run
+          inventory: "OpenShift Cluster"
+          extra_vars:
+            pod_name: "{{ event.alert.labels.pod }}"
+            memory_usage: "{{ event.alert.labels.value }}"
+            threshold: "{{ event.alert.annotations.threshold }}"
+            
+    - name: SSL Certificate Expiration
+      condition: event.alert.labels.alertname == "CertificateExpiring" and "{{ aap_namespace }}" in event.alert.labels.namespace
+      action:
+        run_job_template:
+          name: "SSL Certificate Renewal"
+          organization: "{{ aap_organization }}"
+          job_type: run
+          inventory: "OpenShift Cluster"
+          extra_vars:
+            certificate_name: "{{ event.alert.labels.secret_name }}"
+            expiration_date: "{{ event.alert.annotations.expiration_date }}"
+            days_remaining: "{{ event.alert.labels.days_remaining }}" 

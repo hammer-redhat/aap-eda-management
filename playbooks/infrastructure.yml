@@ -1,0 +1,79 @@
+---
+- name: Prepare infrastructure for AAP deployment
+  hosts: all
+  become: true
+  gather_facts: true
+  
+  roles:
+    - common
+    - firewall
+    - certificates
+  
+  tasks:
+    - name: Update system packages
+      package:
+        name: "*"
+        state: latest
+      when: ansible_os_family == "RedHat"
+    
+    - name: Install required packages
+      package:
+        name:
+          - python3
+          - python3-pip
+          - git
+          - curl
+          - wget
+          - unzip
+          - rsync
+        state: present
+    
+    - name: Configure system timezone
+      timezone:
+        name: "{{ timezone }}"
+    
+    - name: Configure NTP
+      template:
+        src: chrony.conf.j2
+        dest: /etc/chrony.conf
+        backup: true
+      notify: restart chronyd
+    
+    - name: Start and enable chronyd
+      systemd:
+        name: chronyd
+        state: started
+        enabled: true
+    
+    - name: Configure SELinux
+      selinux:
+        policy: targeted
+        state: "{{ selinux_state }}"
+      when: ansible_os_family == "RedHat"
+    
+    - name: Create AAP directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+      loop:
+        - /opt/aap
+        - /var/log/aap
+        - /etc/aap
+        - "{{ backup_directory }}"
+    
+    - name: Create backup user
+      user:
+        name: "{{ backup_user }}"
+        system: true
+        shell: /bin/bash
+        home: "{{ backup_directory }}"
+        createhome: true
+    
+  handlers:
+    - name: restart chronyd
+      systemd:
+        name: chronyd
+        state: restarted 

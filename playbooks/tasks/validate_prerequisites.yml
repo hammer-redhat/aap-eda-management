@@ -1,0 +1,139 @@
+---
+- name: Check if required Python packages are installed
+  pip:
+    name:
+      - kubernetes
+      - openshift
+      - pyyaml
+    state: present
+  check_mode: true
+  register: python_packages_check
+
+- name: Validate Python packages
+  assert:
+    that:
+      - python_packages_check is succeeded
+    fail_msg: "Required Python packages (kubernetes, openshift, pyyaml) are not installed"
+    success_msg: "All required Python packages are available"
+
+- name: Check OpenShift cluster connectivity
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: default
+    kubeconfig: "{{ hostvars[groups['openshift_clusters'][0]]['k8s_auth_kubeconfig'] }}"
+  register: cluster_connectivity
+
+- name: Validate OpenShift cluster access
+  assert:
+    that:
+      - cluster_connectivity is succeeded
+      - cluster_connectivity.resources | length > 0
+    fail_msg: "Cannot connect to OpenShift cluster or access denied"
+    success_msg: "OpenShift cluster is accessible"
+
+- name: Check if AAP namespace exists
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: "{{ aap_namespace }}"
+    kubeconfig: "{{ hostvars[groups['openshift_clusters'][0]]['k8s_auth_kubeconfig'] }}"
+  register: namespace_check
+  failed_when: false
+
+- name: Check cluster operator status
+  kubernetes.core.k8s_info:
+    api_version: config.openshift.io/v1
+    kind: ClusterOperator
+    kubeconfig: "{{ hostvars[groups['openshift_clusters'][0]]['k8s_auth_kubeconfig'] }}"
+  register: cluster_operators
+
+- name: Validate critical cluster operators
+  assert:
+    that:
+      - cluster_operators.resources | selectattr('metadata.name', 'equalto', 'operator-lifecycle-manager') | selectattr('status.conditions', 'defined') | selectattr('status.conditions', 'selectattr', 'type', 'equalto', 'Available') | selectattr('status.conditions', 'selectattr', 'status', 'equalto', 'True') | list | length > 0
+      - cluster_operators.resources | selectattr('metadata.name', 'equalto', 'marketplace') | selectattr('status.conditions', 'defined') | selectattr('status.conditions', 'selectattr', 'type', 'equalto', 'Available') | selectattr('status.conditions', 'selectattr', 'status', 'equalto', 'True') | list | length > 0
+    fail_msg: "Critical cluster operators (OLM, Marketplace) are not available"
+    success_msg: "Critical cluster operators are available"
+
+- name: Check available storage classes
+  kubernetes.core.k8s_info:
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+    kubeconfig: "{{ hostvars[groups['openshift_clusters'][0]]['k8s_auth_kubeconfig'] }}"
+  register: storage_classes
+
+- name: Validate required storage class exists
+  assert:
+    that:
+      - storage_classes.resources | selectattr('metadata.name', 'equalto', storage_class) | list | length > 0
+    fail_msg: "Required storage class '{{ storage_class }}' is not available"
+    success_msg: "Required storage class '{{ storage_class }}' is available"
+
+- name: Check if Red Hat operators catalog is available
+  kubernetes.core.k8s_info:
+    api_version: operators.coreos.com/v1alpha1
+    kind: CatalogSource
+    name: redhat-operators
+    namespace: "{{ openshift_marketplace_namespace }}"
+    kubeconfig: "{{ hostvars[groups['openshift_clusters'][0]]['k8s_auth_kubeconfig'] }}"
+  register: redhat_catalog
+
+- name: Validate Red Hat operators catalog
+  assert:
+    that:
+      - redhat_catalog.resources | length > 0
+      - redhat_catalog.resources[0].status.connectionState.lastObservedState == "READY"
+    fail_msg: "Red Hat operators catalog is not available or not ready"
+    success_msg: "Red Hat operators catalog is available and ready"
+
+- name: Check cluster resource capacity
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Node
+    kubeconfig: "{{ hostvars[groups['openshift_clusters'][0]]['k8s_auth_kubeconfig'] }}"
+  register: cluster_nodes
+
+- name: Calculate total cluster resources
+  set_fact:
+    total_cpu_cores: "{{ cluster_nodes.resources | map(attribute='status.capacity.cpu') | map('int') | sum }}"
+    total_memory_gb: "{{ (cluster_nodes.resources | map(attribute='status.capacity.memory') | map('regex_replace', 'Ki$', '') | map('int') | sum / 1024 / 1024) | round(1) }}"
+
+- name: Validate cluster has sufficient resources
+  assert:
+    that:
+      - total_cpu_cores | int >= 8
+      - total_memory_gb | float >= 32.0
+    fail_msg: "Cluster has insufficient resources. Required: 8+ CPU cores, 32+ GB RAM. Available: {{ total_cpu_cores }} cores, {{ total_memory_gb }} GB RAM"
+    success_msg: "Cluster has sufficient resources: {{ total_cpu_cores }} cores, {{ total_memory_gb }} GB RAM"
+
+- name: Check if cert-manager is installed (if SSL is enabled)
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: cert-manager
+    kubeconfig: "{{ hostvars[groups['openshift_clusters'][0]]['k8s_auth_kubeconfig'] }}"
+  register: cert_manager_ns
+  when: ssl_enabled | bool and cert_manager_enabled | bool
+
+- name: Validate cert-manager availability
+  assert:
+    that:
+      - cert_manager_ns.resources | length > 0
+    fail_msg: "cert-manager is not installed but SSL with cert-manager is enabled"
+    success_msg: "cert-manager is available"
+  when: ssl_enabled | bool and cert_manager_enabled | bool
+
+- name: Display validation summary
+  debug:
+    msg: |
+      Prerequisites validation completed successfully:
+      ✓ OpenShift cluster connectivity
+      ✓ Required Python packages
+      ✓ Critical cluster operators
+      ✓ Storage class availability
+      ✓ Red Hat operators catalog
+      ✓ Cluster resource capacity
+      {% if ssl_enabled and cert_manager_enabled %}✓ cert-manager availability{% endif %}
+      
+      Ready to proceed with AAP 2.5 deployment! 
