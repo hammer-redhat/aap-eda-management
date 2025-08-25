@@ -1,24 +1,23 @@
 ---
-- name: AAP Infrastructure Monitoring and Alerting
+- name: Run a webhook listener service
   hosts: all
   sources:
-    - name: prometheus_alerts
-      ansible.eda.alertmanager:
-        host: alertmanager.openshift-monitoring.svc.cluster.local
-        port: 9093
-        token: "{{ vault_prometheus_auth_token }}"
-        
-    - name: webhook_events
-      ansible.eda.webhook:
-        host: 0.0.0.0
+    - ansible.eda.webhook:
         port: 5000
-        token: "{{ vault_webhook_secret }}"
-        
-    - name: openshift_events
-      ansible.eda.kubernetes:
-        api_version: v1
-        kind: Event
-        namespace: "{{ aap_namespace }}"
+
+  rules:
+    # Health check rule
+    - name: Webhook event
+      condition: event.payload.ping == "pong"
+      action:
+        debug:
+          msg: "Webhook triggered!"
+
+    # Shutdown handler
+    - name: Shutdown
+      condition: event.payload.shutdown is defined
+      action:
+        shutdown:
         
   rules:
     - name: AAP Controller Pod Restart
@@ -26,7 +25,7 @@
       action:
         run_job_template:
           name: "AAP Controller Recovery"
-          organization: "{{ aap_organization }}"
+          organization: "Default"
           job_type: run
           inventory: "OpenShift Cluster"
           extra_vars:
@@ -39,7 +38,7 @@
       action:
         run_job_template:
           name: "AAP Hub Storage Cleanup"
-          organization: "{{ aap_organization }}"
+          organization: "Default"
           job_type: run
           inventory: "OpenShift Cluster"
           extra_vars:
@@ -52,7 +51,7 @@
       action:
         run_job_template:
           name: "EDA Controller Scale Up"
-          organization: "{{ aap_organization }}"
+          organization: "Default"
           job_type: run
           inventory: "OpenShift Cluster"
           extra_vars:
@@ -65,7 +64,7 @@
       action:
         run_job_template:
           name: "Database Recovery"
-          organization: "{{ aap_organization }}"
+          organization: "Default"
           job_type: run
           inventory: "OpenShift Cluster"
           extra_vars:
@@ -77,7 +76,7 @@
       action:
         run_job_template:
           name: "AAP License Renewal Notification"
-          organization: "{{ aap_organization }}"
+          organization: "Default"
           job_type: run
           inventory: "localhost"
           extra_vars:
@@ -89,7 +88,7 @@
       action:
         run_job_template:
           name: "Job Failure Analysis"
-          organization: "{{ aap_organization }}"
+          organization: "Default"
           job_type: run
           inventory: "OpenShift Cluster"
           extra_vars:
@@ -102,7 +101,7 @@
       action:
         run_job_template:
           name: "Node Health Check"
-          organization: "{{ aap_organization }}"
+          organization: "Default"
           job_type: run
           inventory: "OpenShift Cluster"
           extra_vars:
@@ -114,7 +113,7 @@
       action:
         run_job_template:
           name: "AAP Backup Recovery"
-          organization: "{{ aap_organization }}"
+          organization: "Default"
           job_type: run
           inventory: "OpenShift Cluster"
           extra_vars:
@@ -126,7 +125,7 @@
       action:
         run_job_template:
           name: "Memory Usage Analysis"
-          organization: "{{ aap_organization }}"
+          organization: "Default"
           job_type: run
           inventory: "OpenShift Cluster"
           extra_vars:
@@ -139,7 +138,7 @@
       action:
         run_job_template:
           name: "SSL Certificate Renewal"
-          organization: "{{ aap_organization }}"
+          organization: "Default"
           job_type: run
           inventory: "OpenShift Cluster"
           extra_vars:
